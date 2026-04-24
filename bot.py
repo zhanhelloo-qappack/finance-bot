@@ -333,6 +333,14 @@ async def add_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data["status"] = "Оплачено"
 
+    # Способ оплаты: автоматически из "Откуда/куда"
+    if "Касса" in text:
+        context.user_data["payment_method"] = "Наличная"
+    elif "Счёт" in text or "Счет" in text:
+        context.user_data["payment_method"] = "Безналичная"
+    else:  # В долг
+        context.user_data["payment_method"] = ""
+
     return await add_show_confirm(update, context)
 
 
@@ -348,6 +356,7 @@ async def add_show_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"👤 Контрагент: {d.get('contragent') or '—'}\n"
         f"💵 Сумма: {d['amount']:,.0f} ₸\n"
         f"💳 Откуда/куда: {d['source']}\n"
+        f"💰 Способ оплаты: {d.get('payment_method') or '—'}\n"
         f"✅ Статус: {d['status']}"
     )
     await update.message.reply_text(
@@ -384,8 +393,9 @@ async def add_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             d["source"],                           # G
             d["status"],                           # H
             f"via bot",                            # I
+            d.get("payment_method", ""),           # J
         ]
-        sheet_ops.update(f"A{next_row}:I{next_row}", [row_data], value_input_option="USER_ENTERED")
+        sheet_ops.update(f"A{next_row}:J{next_row}", [row_data], value_input_option="USER_ENTERED")
 
         # Сохраняем номер строки — для команды /отмена
         context.chat_data["last_row"] = next_row
@@ -438,7 +448,7 @@ async def cmd_undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Получаем содержимое строки для показа
         row_values = sheet_ops.row_values(last_row)
         # Очищаем строку
-        sheet_ops.batch_clear([f"A{last_row}:I{last_row}"])
+        sheet_ops.batch_clear([f"A{last_row}:J{last_row}"])
         context.chat_data["last_row"] = None
 
         await update.message.reply_text(
