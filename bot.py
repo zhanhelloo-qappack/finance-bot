@@ -92,8 +92,11 @@ TOP_CONTRAGENTS = [
 # Этапы разговора при добавлении операции
 (
     TYPE, COMPANY, CATEGORY, CONTRAGENT, CONTRAGENT_SEARCH,
-    AMOUNT, SOURCE, STATUS, CONFIRM,
-) = range(9)
+    AMOUNT, SOURCE, PAYMENT_METHOD, STATUS, CONFIRM,
+) = range(10)
+
+# Этапы массового режима
+BATCH_COMPANY, BATCH_DATE, BATCH_DATE_CUSTOM = range(100, 103)
 
 # ============================================================================
 # ПРОВЕРКА ДОСТУПА
@@ -130,14 +133,158 @@ def make_keyboard(items, columns=2, add_cancel=True):
 
 
 # ============================================================================
+# МАССОВЫЙ РЕЖИМ (фиксирует компанию и дату)
+# ============================================================================
+
+@check_access
+async def batch_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запуск массового режима — сначала спрашиваем компанию."""
+    # Очищаем предыдущие батч-данные
+    context.chat_data.pop("batch_company", None)
+    context.chat_data.pop("batch_date", None)
+    context.chat_data["batch_count"] = 0
+
+    await update.message.reply_text(
+        "⚡ *Массовый ввод*\n\n"
+        "Зафиксирую компанию и дату — дальше будете вводить операции быстрее.\n\n"
+        "Компания для всех операций?",
+        reply_markup=make_keyboard(COMPANIES + ["🌐 Разные (не фиксировать)"], columns=1),
+        parse_mode="Markdown",
+    )
+    return BATCH_COMPANY
+
+
+async def batch_company(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if "Отмена" in text:
+        return await batch_cancel(update, context)
+
+    if "Разные" in text:
+        context.chat_data["batch_company"] = None  # не фиксируем
+    elif text in COMPANIES:
+        context.chat_data["batch_company"] = text
+    else:
+        await update.message.reply_text("Выберите из списка:")
+        return BATCH_COMPANY
+
+    # Теперь спрашиваем дату
+    today = datetime.now().strftime("%d.%m.%Y")
+    yesterday_ts = datetime.now().timestamp() - 86400
+    yesterday = datetime.fromtimestamp(yesterday_ts).strftime("%d.%m.%Y")
+    day_before_ts = datetime.now().timestamp() - 86400 * 2
+    day_before = datetime.fromtimestamp(day_before_ts).strftime("%d.%m.%Y")
+
+    await update.message.reply_text(
+        "Дата для всех операций?",
+        reply_markup=make_keyboard(
+            [f"📅 Сегодня ({today})", f"📅 Вчера ({yesterday})",
+             f"📅 Позавчера ({day_before})", "✏️ Ввести дату", "🌐 Разные (не фиксировать)"],
+            columns=1,
+        ),
+    )
+    return BATCH_DATE
+
+
+async def batch_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if "Отмена" in text:
+        return await batch_cancel(update, context)
+
+    if "Сегодня" in text:
+        context.chat_data["batch_date"] = datetime.now().strftime("%d.%m.%Y")
+    elif "Вчера" in text and "Позавчера" not in text:
+        ts = datetime.now().timestamp() - 86400
+        context.chat_data["batch_date"] = datetime.fromtimestamp(ts).strftime("%d.%m.%Y")
+    elif "Позавчера" in text:
+        ts = datetime.now().timestamp() - 86400 * 2
+        context.chat_data["batch_date"] = datetime.fromtimestamp(ts).strftime("%d.%m.%Y")
+    elif "Разные" in text:
+        context.chat_data["batch_date"] = None
+    elif "Ввести дату" in text:
+        await update.message.reply_text(
+            "Введите дату в формате ДД.ММ.ГГГГ (например: 20.04.2026):",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+        return BATCH_DATE_CUSTOM
+    else:
+        await update.message.reply_text("Выберите из списка:")
+        return BATCH_DATE
+
+    return await batch_finish_setup(update, context)
+
+
+async def batch_date_custom(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    try:
+        # Проверяем формат
+        dt = datetime.strptime(text, "%d.%m.%Y")
+        context.chat_data["batch_date"] = dt.strftime("%d.%m.%Y")
+    except ValueError:
+        await update.message.reply_text(
+            "❌ Не понял формат. Введите как в примере: 20.04.2026"
+        )
+        return BATCH_DATE_CUSTOM
+
+    return await batch_finish_setup(update, context)
+
+
+async def batch_finish_setup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Настройка массового режима завершена — показываем сводку и запускаем ввод."""
+    context.chat_data["batch_mode"] = True
+
+    company = context.chat_data.get("batch_company") or "любая (будет спрашивать)"
+    date = context.chat_data.get("batch_date") or "любая (будет спрашивать)"
+
+    keyboard = ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("➕ Ещё операция")],
+            [KeyboardButton("🏁 Готово / в меню")],
+        ],
+        resize_keyboard=True,
+    )
+    await update.message.reply_text(
+        f"✅ *Массовый режим включён*\n\n"
+        f"🏢 Компания: {company}\n"
+        f"📅 Дата: {date}\n\n"
+        f"Теперь просто нажимайте «➕ Ещё операция» — компанию и дату спрашивать не буду.\n"
+        f"Когда закончите — «🏁 Готово».",
+        reply_markup=keyboard,
+        parse_mode="Markdown",
+    )
+    return ConversationHandler.END
+
+
+async def batch_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.chat_data.pop("batch_mode", None)
+    context.chat_data.pop("batch_company", None)
+    context.chat_data.pop("batch_date", None)
+    context.chat_data.pop("batch_count", None)
+    keyboard = ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("➕ Добавить операцию"), KeyboardButton("⚡ Массовый ввод")],
+            [KeyboardButton("💰 Остатки"), KeyboardButton("↩️ Отменить последнюю")],
+        ],
+        resize_keyboard=True,
+    )
+    await update.message.reply_text("❌ Массовый режим отменён.", reply_markup=keyboard)
+    return ConversationHandler.END
+
+
+# ============================================================================
 # КОМАНДА /start
 # ============================================================================
 
 @check_access
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Сбрасываем массовый режим при /start
+    context.chat_data.pop("batch_mode", None)
+    context.chat_data.pop("batch_company", None)
+    context.chat_data.pop("batch_date", None)
+    context.chat_data.pop("batch_count", None)
+
     keyboard = ReplyKeyboardMarkup(
         [
-            [KeyboardButton("➕ Добавить операцию")],
+            [KeyboardButton("➕ Добавить операцию"), KeyboardButton("⚡ Массовый ввод")],
             [KeyboardButton("💰 Остатки"), KeyboardButton("↩️ Отменить последнюю")],
         ],
         resize_keyboard=True,
@@ -146,6 +293,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👋 Привет! Я ваш финансовый бот-учётчик.\n\n"
         "📋 Команды:\n"
         "➕ Добавить операцию — записать приход/расход\n"
+        "⚡ Массовый ввод — закрепить компанию/дату и быстро вводить\n"
         "💰 Остатки — показать сколько денег\n"
         "↩️ Отменить последнюю — удалить последнюю запись\n\n"
         "Выбирайте действие внизу 👇",
@@ -208,7 +356,18 @@ async def cmd_balances(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @check_access
 async def add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Сохраняем зафиксированные значения из массового режима (если он активен)
+    batch_company = context.chat_data.get("batch_company")
+    batch_date = context.chat_data.get("batch_date")
+
     context.user_data.clear()
+
+    # Если массовый режим — подставляем зафиксированные значения
+    if batch_company:
+        context.user_data["company"] = batch_company
+    if batch_date:
+        context.user_data["date"] = batch_date
+
     await update.message.reply_text(
         "➕ *Новая операция*\n\nЧто за операция?",
         reply_markup=make_keyboard(["📥 Приход", "📤 Расход"], columns=2),
@@ -228,6 +387,15 @@ async def add_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Выберите кнопку:")
         return TYPE
+
+    # Если компания уже известна (массовый режим) — пропускаем этап
+    if context.user_data.get("company"):
+        cats = INCOME_CATEGORIES if context.user_data["type"] == "Приход" else EXPENSE_CATEGORIES
+        await update.message.reply_text(
+            f"🏢 Компания: {context.user_data['company']} (массовый режим)\n\nКатегория?",
+            reply_markup=make_keyboard(cats, columns=2),
+        )
+        return CATEGORY
 
     await update.message.reply_text(
         "Какая компания?",
@@ -333,13 +501,38 @@ async def add_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         context.user_data["status"] = "Оплачено"
 
-    # Способ оплаты: автоматически из "Откуда/куда"
+    # Предлагаю способ оплаты — с подсказкой по умолчанию
     if "Касса" in text:
-        context.user_data["payment_method"] = "Наличная"
+        hint = "(обычно для кассы — Наличная)"
     elif "Счёт" in text or "Счет" in text:
+        hint = "(обычно для счёта — Безналичная)"
+    else:
+        hint = "(для долгов обычно — В долг)"
+
+    await update.message.reply_text(
+        f"Способ оплаты?\n{hint}",
+        reply_markup=make_keyboard(
+            ["💵 Наличная", "💳 Безналичная", "📋 В долг"],
+            columns=2,
+        ),
+    )
+    return PAYMENT_METHOD
+
+
+async def add_payment_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if "Отмена" in text:
+        return await add_cancel(update, context)
+
+    if "Наличная" in text:
+        context.user_data["payment_method"] = "Наличная"
+    elif "Безналичная" in text:
         context.user_data["payment_method"] = "Безналичная"
-    else:  # В долг
-        context.user_data["payment_method"] = ""
+    elif "В долг" in text:
+        context.user_data["payment_method"] = "В долг"
+    else:
+        await update.message.reply_text("Выберите кнопку:")
+        return PAYMENT_METHOD
 
     return await add_show_confirm(update, context)
 
@@ -347,9 +540,10 @@ async def add_source(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def add_show_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = context.user_data
     icon = "📥" if d["type"] == "Приход" else "📤"
+    op_date = d.get("date") or datetime.now().strftime("%d.%m.%Y")
     msg = (
         f"{icon} *Проверьте операцию:*\n\n"
-        f"📅 Дата: {datetime.now().strftime('%d.%m.%Y')}\n"
+        f"📅 Дата: {op_date}\n"
         f"🏢 Компания: {d['company']}\n"
         f"🏷 Тип: {d['type']}\n"
         f"📁 Категория: {d['category']}\n"
@@ -378,13 +572,14 @@ async def add_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     d = context.user_data
     try:
         # Находим первую пустую строку на листе "Операции"
-        # Колонки: A=Дата, B=Компания, C=Тип, D=Категория, E=Контрагент,
-        # F=Сумма, G=Откуда/куда, H=Статус, I=Комментарий
         all_values = sheet_ops.get_all_values()
         next_row = len(all_values) + 1
 
+        # Дата: из массового режима или сегодняшняя
+        op_date = d.get("date") or datetime.now().strftime("%d.%m.%Y")
+
         row_data = [
-            datetime.now().strftime("%d.%m.%Y"),  # A
+            op_date,                               # A
             d["company"],                          # B
             d["type"],                             # C
             d["category"],                         # D
@@ -400,16 +595,24 @@ async def add_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Сохраняем номер строки — для команды /отмена
         context.chat_data["last_row"] = next_row
 
+        # Счётчик записей в массовом режиме
+        if context.chat_data.get("batch_mode"):
+            context.chat_data["batch_count"] = context.chat_data.get("batch_count", 0) + 1
+            count = context.chat_data["batch_count"]
+            batch_info = f"\n📦 Массовый режим: записано {count}"
+        else:
+            batch_info = ""
+
+        # Клавиатура с кнопками "Ещё"
         keyboard = ReplyKeyboardMarkup(
             [
-                [KeyboardButton("➕ Добавить операцию")],
-                [KeyboardButton("💰 Остатки"), KeyboardButton("↩️ Отменить последнюю")],
+                [KeyboardButton("➕ Ещё операция"), KeyboardButton("➕ Ещё (та же компания)")],
+                [KeyboardButton("🏁 Готово / в меню")],
             ],
             resize_keyboard=True,
         )
         await update.message.reply_text(
-            f"✅ Записано в таблицу (строка {next_row})\n\n"
-            "Что дальше?",
+            f"✅ Записано в таблицу (строка {next_row}){batch_info}\n\nЧто дальше?",
             reply_markup=keyboard,
         )
     except Exception as e:
@@ -420,13 +623,23 @@ async def add_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def add_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    keyboard = ReplyKeyboardMarkup(
-        [
-            [KeyboardButton("➕ Добавить операцию")],
-            [KeyboardButton("💰 Остатки"), KeyboardButton("↩️ Отменить последнюю")],
-        ],
-        resize_keyboard=True,
-    )
+    # Если был массовый режим — остаёмся в нём
+    if context.chat_data.get("batch_mode"):
+        keyboard = ReplyKeyboardMarkup(
+            [
+                [KeyboardButton("➕ Ещё операция")],
+                [KeyboardButton("🏁 Готово / в меню")],
+            ],
+            resize_keyboard=True,
+        )
+    else:
+        keyboard = ReplyKeyboardMarkup(
+            [
+                [KeyboardButton("➕ Добавить операцию"), KeyboardButton("⚡ Массовый ввод")],
+                [KeyboardButton("💰 Остатки"), KeyboardButton("↩️ Отменить последнюю")],
+            ],
+            resize_keyboard=True,
+        )
     await update.message.reply_text("❌ Отменено.", reply_markup=keyboard)
     return ConversationHandler.END
 
@@ -467,9 +680,50 @@ async def cmd_undo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @check_access
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if "Добавить операцию" in text:
+
+    # Кнопка "Ещё операция" — такая же как "Добавить операцию"
+    if "Ещё операция" in text or "Добавить операцию" in text:
         return await add_start(update, context)
-    elif "Остатки" in text:
+
+    # Кнопка "Ещё (та же компания)" — фиксируем компанию, запускаем добавление
+    if "Ещё (та же компания)" in text:
+        last_company = context.user_data.get("company")
+        if last_company:
+            # Временно включаем "мини-массовый режим" — только компания
+            context.chat_data["batch_company"] = last_company
+            await update.message.reply_text(
+                f"🏢 Компания зафиксирована: {last_company}"
+            )
+        return await add_start(update, context)
+
+    # Кнопка "Готово / в меню" — выходим из массового режима
+    if "Готово" in text or "в меню" in text:
+        count = context.chat_data.get("batch_count", 0)
+        context.chat_data.pop("batch_mode", None)
+        context.chat_data.pop("batch_company", None)
+        context.chat_data.pop("batch_date", None)
+        context.chat_data.pop("batch_count", None)
+
+        summary = f"\n📦 Записано операций: {count}" if count > 0 else ""
+
+        keyboard = ReplyKeyboardMarkup(
+            [
+                [KeyboardButton("➕ Добавить операцию"), KeyboardButton("⚡ Массовый ввод")],
+                [KeyboardButton("💰 Остатки"), KeyboardButton("↩️ Отменить последнюю")],
+            ],
+            resize_keyboard=True,
+        )
+        await update.message.reply_text(
+            f"🏁 Готово!{summary}\n\nВыбирайте действие:",
+            reply_markup=keyboard,
+        )
+        return
+
+    # Кнопка "Массовый ввод" — запустить массовый режим
+    if "Массовый ввод" in text or "массовый" in text.lower():
+        return await batch_start(update, context)
+
+    if "Остатки" in text:
         await cmd_balances(update, context)
     elif "Отменить последнюю" in text:
         await cmd_undo(update, context)
@@ -490,7 +744,7 @@ def main():
     conv = ConversationHandler(
         entry_points=[
             CommandHandler("add", add_start),
-            MessageHandler(filters.Regex(r"Добавить операцию"), add_start),
+            MessageHandler(filters.Regex(r"Добавить операцию|Ещё операция|Ещё \(та же компания\)"), add_start),
         ],
         states={
             TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_type)],
@@ -500,11 +754,27 @@ def main():
             CONTRAGENT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_contragent_search)],
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_amount)],
             SOURCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_source)],
+            PAYMENT_METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_payment_method)],
             CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_confirm)],
         },
         fallbacks=[CommandHandler("cancel", add_cancel)],
     )
 
+    # Диалог массового режима
+    batch_conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("batch", batch_start),
+            MessageHandler(filters.Regex(r"Массовый ввод"), batch_start),
+        ],
+        states={
+            BATCH_COMPANY: [MessageHandler(filters.TEXT & ~filters.COMMAND, batch_company)],
+            BATCH_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, batch_date)],
+            BATCH_DATE_CUSTOM: [MessageHandler(filters.TEXT & ~filters.COMMAND, batch_date_custom)],
+        },
+        fallbacks=[CommandHandler("cancel", batch_cancel)],
+    )
+
+    app.add_handler(batch_conv)
     app.add_handler(conv)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("menu", cmd_start))
