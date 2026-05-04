@@ -309,34 +309,45 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_balances(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⏳ Считаю остатки...")
     try:
-        # Читаем главные ячейки с листа "Остатки"
-        # B4 — общий итог, D11 — наличные, D18 — счета
-        b4 = sheet_balances.acell("B4").value or "0"
-        d11 = sheet_balances.acell("D11").value or "0"
-        d18 = sheet_balances.acell("D18").value or "0"
+        # Читаем все данные с листа "Остатки" одним запросом
+        all_data = sheet_balances.get_all_values()
 
-        # Кассы отдельно (D8, D9, D10)
-        cash_qappack = sheet_balances.acell("D8").value or "0"
-        cash_sharipov = sheet_balances.acell("D9").value or "0"
-        cash_saratsin = sheet_balances.acell("D10").value or "0"
+        def find_value_by_label(label, col=4):
+            """Ищет строку с заданным текстом в колонке A, возвращает значение из указанной колонки.
+            col=2 для B, col=3 для C, col=4 для D"""
+            for row in all_data:
+                if len(row) > 0 and label.lower() in row[0].lower():
+                    if len(row) >= col:
+                        return row[col - 1] or "0"
+            return "0"
 
-        # Счета (D15, D16, D17)
-        bank_qappack = sheet_balances.acell("D15").value or "0"
-        bank_sharipov = sheet_balances.acell("D16").value or "0"
-        bank_saratsin = sheet_balances.acell("D17").value or "0"
+        # Главный итог — B4 (всегда фиксированный)
+        b4 = all_data[3][1] if len(all_data) > 3 and len(all_data[3]) > 1 else "0"
 
-        # Дебиторка B64, кредиторка B110
-        debt_in = sheet_balances.acell("B64").value or "0"
-        debt_out = sheet_balances.acell("B110").value or "0"
+        # Кассы — ищем по названию
+        cash_qappack = find_value_by_label("Касса ИП QapPack")
+        cash_sharipov = find_value_by_label("Касса ИП Шарипов")
+        cash_saratsin = find_value_by_label("Касса ТОО Сарацин")
+        cash_total = find_value_by_label("ИТОГО наличных")
+
+        # Счета — ищем по названию
+        bank_qappack = find_value_by_label("Счёт ИП QapPack")
+        bank_sharipov = find_value_by_label("Счёт ИП Шарипов")
+        bank_saratsin = find_value_by_label("Счёт ТОО Сарацин")
+        bank_total = find_value_by_label("ИТОГО на счетах")
+
+        # Дебиторка и кредиторка — ищем по названию (col=2 это B)
+        debt_in = find_value_by_label("ИТОГО нам должны", col=2)
+        debt_out = find_value_by_label("ИТОГО мы должны", col=2)
 
         msg = (
             f"💰 *ВСЕГО ДЕНЕГ:* {b4}\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"💵 *Наличные:* {d11}\n"
+            f"💵 *Наличные:* {cash_total}\n"
             f"├ QapPack: {cash_qappack}\n"
             f"├ Шарипов: {cash_sharipov}\n"
             f"└ Сарацин: {cash_saratsin}\n\n"
-            f"🏦 *На счетах:* {d18}\n"
+            f"🏦 *На счетах:* {bank_total}\n"
             f"├ QapPack: {bank_qappack}\n"
             f"├ Шарипов: {bank_sharipov}\n"
             f"└ Сарацин: {bank_saratsin}\n"
