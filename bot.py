@@ -92,8 +92,8 @@ TOP_CONTRAGENTS = [
 # Этапы разговора при добавлении операции
 (
     TYPE, COMPANY, CATEGORY, CONTRAGENT, CONTRAGENT_SEARCH,
-    AMOUNT, SOURCE, PAYMENT_METHOD, STATUS, CONFIRM,
-) = range(10)
+    CONTRAGENT_CONFIRM, AMOUNT, SOURCE, PAYMENT_METHOD, STATUS, CONFIRM,
+) = range(11)
 
 # Этапы массового режима
 BATCH_COMPANY, BATCH_DATE, BATCH_DATE_CUSTOM = range(100, 103)
@@ -475,8 +475,77 @@ async def add_contragent(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def add_contragent_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["contragent"] = update.message.text
+    import difflib
+    
+    entered_name = update.message.text.strip()
+    
+    # Получаем все существующие контрагенты из листа "Операции"
+    try:
+        all_values = sheet_ops.get_all_values()
+        existing_contragents = set()
+        for row in all_values[3:]:  # Пропускаем шапку
+            if len(row) > 4 and row[4]:  # Колонка E (контрагент)
+                existing_contragents.add(row[4].strip())
+        existing_contragents = sorted(existing_contragents)
+    except Exception:
+        existing_contragents = []
+    
+    # Ищем похожие контрагенты (по расстоянию редактирования)
+    # Удаляем префиксы ИП/ТОО для сравнения
+    def normalize(s):
+        s = s.lower()
+        for prefix in ['ип ', 'тоо ', 'ооо ']:
+            if s.startswith(prefix):
+                s = s[len(prefix):]
+        return s
+    
+    entered_norm = normalize(entered_name)
+    
+    # Находим похожие (расстояние < 0.7)
+    similar = []
+    for existing in existing_contragents:
+        existing_norm = normalize(existing)
+        ratio = difflib.SequenceMatcher(None, entered_norm, existing_norm).ratio()
+        if ratio > 0.7 and entered_norm != existing_norm:  # Похож, но не идентичен
+            similar.append((existing, ratio))
+    
+    # Сортируем по убыванию похожести
+    similar.sort(key=lambda x: x[1], reverse=True)
+    
+    # Если есть похожие — предлагаем выбор
+    if similar:
+        top_match = similar[0][0]
+        context.user_data["entered_contragent"] = entered_name
+        context.user_data["suggested_contragent"] = top_match
+        
+        await update.message.reply_text(
+            f"🤔 Вы имели в виду:\n\n«{top_match}»\n\nили создать нового контрагента «{entered_name}»?",
+            reply_markup=make_keyboard([f"✅ {top_match}", f"➕ Создать «{entered_name}»"], columns=1),
+        )
+        return CONTRAGENT_CONFIRM
+    
+    # Если похожих нет — сохраняем как есть
+    context.user_data["contragent"] = entered_name
     await update.message.reply_text("Сумма в тенге (просто число):")
+    return AMOUNT
+
+
+async def add_contragent_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if "Отмена" in text:
+        return await add_cancel(update, context)
+    
+    # Если выбрал существующего (начинается с ✅)
+    if text.startswith("✅"):
+        context.user_data["contragent"] = context.user_data["suggested_contragent"]
+    else:
+        # Создаём нового
+        context.user_data["contragent"] = context.user_data["entered_contragent"]
+    
+    await update.message.reply_text(
+        "Сумма в тенге (просто число):",
+        reply_markup=ReplyKeyboardRemove(),
+    )
     return AMOUNT
 
 
@@ -763,6 +832,7 @@ def main():
             CATEGORY: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_category)],
             CONTRAGENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_contragent)],
             CONTRAGENT_SEARCH: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_contragent_search)],
+            CONTRAGENT_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_contragent_confirm)],
             AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_amount)],
             SOURCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_source)],
             PAYMENT_METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_payment_method)],
