@@ -73,7 +73,7 @@ EXPENSE_CATEGORIES = [
 ]
 
 SOURCES_CASH = [
-    "Касса ИП QapPack", "Касса ИП Шарипов", "Касса ТОО Сарацин"
+    "Общая касса"
 ]
 SOURCES_BANK = [
     "Счёт ИП QapPack", "Счёт ИП Шарипов", "Счёт ТОО Сарацин"
@@ -324,11 +324,8 @@ async def cmd_balances(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Главный итог — B4 (всегда фиксированный)
         b4 = all_data[3][1] if len(all_data) > 3 and len(all_data[3]) > 1 else "0"
 
-        # Кассы — ищем по названию
-        cash_qappack = find_value_by_label("Касса ИП QapPack")
-        cash_sharipov = find_value_by_label("Касса ИП Шарипов")
-        cash_saratsin = find_value_by_label("Касса ТОО Сарацин")
-        cash_total = find_value_by_label("ИТОГО наличных")
+        # Общая касса
+        cash_total = find_value_by_label("Общая касса")
 
         # Счета — ищем по названию
         bank_qappack = find_value_by_label("Счёт ИП QapPack")
@@ -343,10 +340,7 @@ async def cmd_balances(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = (
             f"💰 *ВСЕГО ДЕНЕГ:* {b4}\n"
             f"━━━━━━━━━━━━━━━\n"
-            f"💵 *Наличные:* {cash_total}\n"
-            f"├ QapPack: {cash_qappack}\n"
-            f"├ Шарипов: {cash_sharipov}\n"
-            f"└ Сарацин: {cash_saratsin}\n\n"
+            f"💵 *Общая касса:* {cash_total}\n\n"
             f"🏦 *На счетах:* {bank_total}\n"
             f"├ QapPack: {bank_qappack}\n"
             f"├ Шарипов: {bank_sharipov}\n"
